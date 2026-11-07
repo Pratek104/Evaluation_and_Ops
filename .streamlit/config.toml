@@ -1,0 +1,64 @@
+# Streamlit's file watcher logs noisy optional-dependency warnings from
+# transformers, which the embedding model imports. Hot reload is not needed
+# for this app.
+[server]
+fileWatcherType = "none"
+
+[theme]
+baseRadius = "10px"
+buttonRadius = "8px"
+showWidgetBorder = true
+showSidebarBorder = true
+font = "'Inter':https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+baseFontSize = 15
+headingFontSizes = ["32px", "26px", "21px", "18px", "16px", "14px"]
+headingFontWeights = [600, 600, 600, 600, 600, 600]
+linkUnderline = false
+
+[theme.light]
+primaryColor = "#4F46E5"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F8FAFC"
+textColor = "#0F172A"
+linkColor = "#4338CA"
+borderColor = "#E2E8F0"
+codeBackgroundColor = "#F1F5F9"
+codeTextColor = "#0F172A"
+grayColor = "#64748B"
+blueColor = "#2563EB"
+greenColor = "#059669"
+redColor = "#DC2626"
+yellowColor = "#CA8A04"
+orangeColor = "#EA580C"
+violetColor = "#7C3AED"
+
+[theme.dark]
+primaryColor = "#818CF8"
+backgroundColor = "#0B1120"
+secondaryBackgroundColor = "#111827"
+textColor = "#E2E8F0"
+linkColor = "#A5B4FC"
+borderColor = "#1F2937"
+codeBackgroundColor = "#1E293B"
+codeTextColor = "#E2E8F0"
+grayColor = "#94A3B8"
+blueColor = "#60A5FA"
+greenColor = "#34D399"
+redColor = "#F87171"
+yellowColor = "#FACC15"
+orangeColor = "#FB923C"
+violetColor = "#A78BFA"
+
+[theme.light.sidebar]
+backgroundColor = "#F8FAFC"
+secondaryBackgroundColor = "#F1F5F9"
+textColor = "#0F172A"
+borderColor = "#E2E8F0"
+primaryColor = "#4F46E5"
+
+[theme.dark.sidebar]
+backgroundColor = "#080D18"
+secondaryBackgroundColor = "#111827"
+textColor = "#E2E8F0"
+borderColor = "#1F2937"
+primaryColor = "#818CF8"
