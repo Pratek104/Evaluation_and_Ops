@@ -1,0 +1,2 @@
+# Development and CI dependencies, including the application package.
+-e .[dev]

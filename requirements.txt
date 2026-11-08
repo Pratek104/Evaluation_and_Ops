@@ -1,7 +1,2 @@
-streamlit>=1.67,<2
-pypdf>=6.17,<7
-numpy>=2.0
-requests>=2.32
-python-dotenv>=1.0
-sentence-transformers>=5.0
-langsmith>=0.12,<1
+# Runtime dependencies are declared in pyproject.toml.
+-e .

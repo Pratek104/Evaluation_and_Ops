@@ -1,0 +1,6 @@
+* text=auto eol=lf
+
+*.pdf binary
+*.npz binary
+*.db binary
+*.sqlite binary

@@ -4,6 +4,9 @@
 [server]
 fileWatcherType = "none"
 
+[browser]
+gatherUsageStats = false
+
 [theme]
 baseRadius = "10px"
 buttonRadius = "8px"
