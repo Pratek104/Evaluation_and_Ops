@@ -1,0 +1,21 @@
+{
+  "started_at": "2026-11-08T07:51:25+00:00",
+  "finished_at": "2026-11-08T07:51:40+00:00",
+  "dry_run": false,
+  "requested_model": "google/gemma-4-26b-a4b-it:free",
+  "pdf_path": "data/raw/xyz_company.pdf",
+  "page_count": 23,
+  "passage_count": 44,
+  "search_mode": "Hybrid (semantic + keyword)",
+  "warmup_retrieval_ms": 14764.0,
+  "cases_in_dataset": 25,
+  "cases_selected_this_run": 1,
+  "cases_completed_this_run": 0,
+  "cases_errored_this_run": 0,
+  "cases_skipped_this_run": 1,
+  "records_total": 25,
+  "status_counts": {
+    "ok": 25
+  },
+  "output": "evals/results/rag_answers.jsonl"
+}

@@ -1,0 +1,21 @@
+{
+  "started_at": "2026-11-08T07:54:41+00:00",
+  "finished_at": "2026-11-08T07:54:41+00:00",
+  "judge_model": "deepseek/deepseek-v4.1-flash",
+  "cases_in_answers": 25,
+  "cases_selected_this_run": 1,
+  "cases_judged_this_run": 0,
+  "cases_errored_this_run": 0,
+  "cases_skipped_this_run": 1,
+  "records_total": 25,
+  "status_counts": {
+    "judged": 25
+  },
+  "usage_totals": {
+    "prompt_tokens": 69213,
+    "completion_tokens": 11093,
+    "total_tokens": 80306,
+    "cost_usd": 0.014166
+  },
+  "output": "evals/results/judge_scores.jsonl"
+}
