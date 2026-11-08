@@ -19,18 +19,40 @@ from pathlib import Path
 import numpy as np
 from pypdf import PdfReader
 
-from tracing import traceable
+from ..config import RAG_CACHE_DIR
+from .tracing import traceable
 
 EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 CHUNK_SIZE = 1100
 CHUNK_OVERLAP = 180
 DENSE_WEIGHT = 0.7
 INDEX_VERSION = "2"
-CACHE_DIR = Path(__file__).resolve().parent / ".rag_cache"
+CACHE_DIR = RAG_CACHE_DIR
 
 _model = None
 _SENTENCE_BREAK = re.compile(r"(?<=[.!?])\s+")
 _TOC_ENTRY = re.compile(r"\.{4,}\s*\d+")
+
+# Pages 1-20 are the original handbook. Appendix B (directory) and Appendix C
+# (salary) start after that and are restricted by role.
+PUBLIC_HANDBOOK_LAST_PAGE = 20
+ACCESS_SCOPES = ("public", "directory", "full")
+_SALARY_MARKERS = (
+    "salary",
+    "monthly gross",
+    "annual salary",
+    "compensation",
+    "payroll",
+    "provident fund",
+)
+_DIRECTORY_MARKERS = (
+    "employee directory",
+    "work email",
+    "reports to",
+    "department counts",
+    "headcount",
+    "xyz0",
+)
 
 
 @dataclass(frozen=True)
@@ -50,12 +72,41 @@ class SearchResult:
     score: float
 
 
+def passage_access_level(passage: Passage) -> str:
+    """Classify a passage as public, directory-only, or salary data.
+
+    The classification is deliberately conservative: anything after the main
+    handbook that cannot be positively identified is treated as directory data.
+    """
+    if passage.page <= PUBLIC_HANDBOOK_LAST_PAGE:
+        return "public"
+
+    text = passage.text.lower()
+    if any(marker in text for marker in _SALARY_MARKERS):
+        return "salary"
+    if any(marker in text for marker in _DIRECTORY_MARKERS):
+        return "directory"
+    return "directory"
+
+
+def scope_allows(access_scope: str, passage_level: str) -> bool:
+    """Return whether a retrieval scope may read a passage level."""
+    if access_scope not in ACCESS_SCOPES:
+        access_scope = "public"
+    if access_scope == "full":
+        return True
+    if access_scope == "directory":
+        return passage_level in ("public", "directory")
+    return passage_level == "public"
+
+
 def _trace_retrieval_inputs(inputs: dict) -> dict:
     """Log only the useful part of a `RagEngine.search` call."""
     query = inputs.get("query", "")
     return {
         "query": query if isinstance(query, str) else str(query),
         "top_k": inputs.get("top_k", 5),
+        "access_scope": inputs.get("access_scope", "full"),
     }
 
 
@@ -180,18 +231,14 @@ class _BM25:
         self._lengths = [len(tokens) for tokens in self._tokenized]
         self._counts = [Counter(tokens) for tokens in self._tokenized]
         self._size = len(texts)
-        self._avg_length = (
-            sum(self._lengths) / self._size if self._size else 0.0
-        )
+        self._avg_length = sum(self._lengths) / self._size if self._size else 0.0
 
         document_frequency: Counter[str] = Counter()
         for tokens in self._tokenized:
             document_frequency.update(set(tokens))
 
         self._idf = {
-            term: math.log(
-                1 + (self._size - frequency + 0.5) / (frequency + 0.5)
-            )
+            term: math.log(1 + (self._size - frequency + 0.5) / (frequency + 0.5))
             for term, frequency in document_frequency.items()
         }
 
@@ -241,10 +288,14 @@ class RagEngine:
 
     @property
     def search_mode(self) -> str:
-        return "Hybrid (semantic + keyword)" if self.embeddings is not None else "Keyword only"
+        return (
+            "Hybrid (semantic + keyword)"
+            if self.embeddings is not None
+            else "Keyword only"
+        )
 
     @classmethod
-    def load(cls, pdf_path: Path) -> "RagEngine":
+    def load(cls, pdf_path: Path) -> RagEngine:
         """Load an index from cache, or build one from the PDF."""
         pdf_path = Path(pdf_path).resolve()
         if not pdf_path.exists():
@@ -260,15 +311,22 @@ class RagEngine:
         if cache_path.exists():
             try:
                 with np.load(cache_path, allow_pickle=False) as data:
-                    texts = [str(text) for text in data["texts"]]
-                    pages = [int(page) for page in data["pages"]]
-                    embeddings = np.asarray(data["embeddings"], dtype=np.float32)
-                    page_count = int(data["page_count"])
-                passages = [
+                    cached_texts = [str(text) for text in data["texts"]]
+                    cached_pages = [int(page) for page in data["pages"]]
+                    cached_embeddings = np.asarray(data["embeddings"], dtype=np.float32)
+                    cached_page_count = int(data["page_count"])
+                cached_passages = [
                     Passage(id=index, page=page, text=text)
-                    for index, (text, page) in enumerate(zip(texts, pages))
+                    for index, (text, page) in enumerate(
+                        zip(cached_texts, cached_pages, strict=True)
+                    )
                 ]
-                return cls(pdf_path, passages, page_count, embeddings)
+                return cls(
+                    pdf_path,
+                    cached_passages,
+                    cached_page_count,
+                    cached_embeddings,
+                )
             except (OSError, ValueError, KeyError):
                 cache_path.unlink(missing_ok=True)
 
@@ -279,9 +337,7 @@ class RagEngine:
             if len(page_text) < 30:
                 continue
             for chunk in split_passages(page_text):
-                passages.append(
-                    Passage(id=len(passages), page=page_number, text=chunk)
-                )
+                passages.append(Passage(id=len(passages), page=page_number, text=chunk))
 
         if not passages:
             raise ValueError("No readable text found in the PDF.")
@@ -297,7 +353,7 @@ class RagEngine:
                 normalize_embeddings=True,
                 show_progress_bar=False,
             ).astype(np.float32)
-        except Exception as exc:  # pragma: no cover - depends on local model
+        except Exception as exc:  # pragma: no cover
             embedding_error = str(exc)
 
         if embeddings is not None:
@@ -324,10 +380,30 @@ class RagEngine:
         process_inputs=_trace_retrieval_inputs,
         process_outputs=_trace_retrieval_outputs,
     )
-    def search(self, query: str, top_k: int = 5) -> list[SearchResult]:
-        """Return the passages most relevant to a question."""
+    def search(
+        self,
+        query: str,
+        top_k: int = 5,
+        access_scope: str = "full",
+    ) -> list[SearchResult]:
+        """Return the passages most relevant to a question.
+
+        `access_scope` is enforced before ranking so restricted passages can
+        never appear in results, prompts, or source citations.
+        """
         query = query.strip()
         if not query or not self.passages:
+            return []
+
+        allowed = np.fromiter(
+            (
+                scope_allows(access_scope, passage_access_level(passage))
+                for passage in self.passages
+            ),
+            dtype=bool,
+            count=len(self.passages),
+        )
+        if not allowed.any():
             return []
 
         keyword_scores = self._bm25.scores(query)
@@ -351,12 +427,13 @@ class RagEngine:
 
         if semantic_scores is not None:
             scores = (
-                DENSE_WEIGHT * semantic_scores
-                + (1 - DENSE_WEIGHT) * keyword_scores
+                DENSE_WEIGHT * semantic_scores + (1 - DENSE_WEIGHT) * keyword_scores
             )
         else:
             scores = keyword_scores
 
+        # Make restricted passages ineligible before selecting the top-k.
+        scores = np.where(allowed, scores, -np.inf)
         top_k = max(1, min(int(top_k), len(self.passages)))
         order = np.argsort(scores)[::-1][:top_k]
         return [

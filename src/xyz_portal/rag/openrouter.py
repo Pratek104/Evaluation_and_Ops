@@ -7,7 +7,7 @@ from collections.abc import Iterator
 
 import requests
 
-from tracing import traceable
+from .tracing import traceable
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
@@ -118,13 +118,20 @@ def _error_from_response(status_code: int, body: str) -> OpenRouterError:
     if status_code == 401:
         message = "OpenRouter rejected the API key. Check OPENROUTER_API_KEY in .env."
     elif status_code == 402:
-        message = "The OpenRouter account does not have enough credits for this request."
+        message = (
+            "The OpenRouter account does not have enough credits for this request."
+        )
     elif status_code == 403:
         message = "This model is not available to your OpenRouter account."
     elif status_code == 404:
-        message = "The selected model is unavailable. Pick another model in the sidebar."
+        message = (
+            "The selected model is unavailable. Pick another model in the sidebar."
+        )
     elif status_code == 429:
-        message = "The model is rate-limited right now. Try again shortly or pick another model."
+        message = (
+            "The model is rate-limited right now. Try again shortly or pick another "
+            "model."
+        )
     elif status_code >= 500:
         message = "OpenRouter is temporarily unavailable. Please retry in a moment."
     else:
@@ -180,9 +187,7 @@ def stream_chat(
     switch between free models.
     """
     if not api_key:
-        raise OpenRouterError(
-            "OPENROUTER_API_KEY is missing. Add it to the .env file."
-        )
+        raise OpenRouterError("OPENROUTER_API_KEY is missing. Add it to the .env file.")
 
     candidates = [model]
     if allow_free_fallback and is_free_model(model):
@@ -218,17 +223,11 @@ def stream_chat(
                 stream=True,
             ) as response:
                 if response.status_code != 200:
-                    error = _error_from_response(
-                        response.status_code, response.text
-                    )
+                    error = _error_from_response(response.status_code, response.text)
                     last_error = error
                     if error.retryable and has_more_candidates:
                         continue
-                    if (
-                        error.retryable
-                        and is_free_model(model)
-                        and len(candidates) > 1
-                    ):
+                    if error.retryable and is_free_model(model) and len(candidates) > 1:
                         break
                     raise error
 
@@ -250,9 +249,7 @@ def stream_chat(
                         continue
 
                     if "error" in event:
-                        raise _error_from_response(
-                            502, json.dumps(event)
-                        )
+                        raise _error_from_response(502, json.dumps(event))
 
                     choices = event.get("choices") or []
                     if not choices:

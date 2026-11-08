@@ -3,21 +3,22 @@
 The app is not built on LangChain, so tracing uses the LangSmith SDK directly
 (``trace`` context manager plus ``@traceable`` spans). This module loads
 ``.env`` before the SDK reads its settings, accepts both the standard
-``LANGSMITH_*`` names and the legacy ``Langsmith`` key, and exports safe
-no-op fallbacks when tracing is unavailable so the chatbot keeps working.
+``LANGSMITH_*`` names and the legacy ``Langsmith`` key, and exports safe no-op
+fallbacks when tracing is unavailable so the chatbot keeps working.
 """
 
 from __future__ import annotations
 
 import os
+from collections.abc import Iterator
 from contextlib import contextmanager
-from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Literal
 
 from dotenv import load_dotenv
 
-BASE_DIR = Path(__file__).resolve().parent
-load_dotenv(BASE_DIR / ".env")
+from ..config import PROJECT_ROOT
+
+load_dotenv(PROJECT_ROOT / ".env")
 
 DEFAULT_PROJECT = "xyz-handbook-rag"
 DEFAULT_ENDPOINT = "https://api.smith.langchain.com"
@@ -75,14 +76,17 @@ else:
     os.environ["LANGSMITH_TRACING"] = "false"
     os.environ["LANGCHAIN_TRACING_V2"] = "false"
 
-try:
-    from langsmith import trace as _langsmith_trace
-    from langsmith import traceable as _langsmith_traceable
+_langsmith_trace: Any = None
+_langsmith_traceable: Any = None
 
+try:
+    from langsmith import trace as _langsmith_trace_import
+    from langsmith import traceable as _langsmith_traceable_import
+
+    _langsmith_trace = _langsmith_trace_import
+    _langsmith_traceable = _langsmith_traceable_import
     SDK_AVAILABLE = True
 except Exception:  # pragma: no cover - only when langsmith is not installed
-    _langsmith_trace = None
-    _langsmith_traceable = None
     SDK_AVAILABLE = False
 
 TRACING_ENABLED = bool(_api_key and _enabled_by_env and SDK_AVAILABLE)
@@ -98,6 +102,17 @@ else:
     TRACING_STATUS = "LangSmith tracing is turned off (LANGSMITH_TRACING=false)."
 
 
+RunType = Literal[
+    "tool",
+    "chain",
+    "llm",
+    "retriever",
+    "embedding",
+    "prompt",
+    "parser",
+]
+
+
 class _NoopRun:
     """Stand-in for a LangSmith run when tracing is disabled."""
 
@@ -110,7 +125,7 @@ def trace_run(
     name: str,
     /,
     *,
-    run_type: str = "chain",
+    run_type: RunType = "chain",
     inputs: dict[str, Any] | None = None,
     metadata: dict[str, Any] | None = None,
     tags: list[str] | None = None,
