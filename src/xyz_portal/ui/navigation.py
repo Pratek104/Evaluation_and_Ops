@@ -19,13 +19,14 @@ def build_pages(user: dict[str, Any]) -> list[st.Page]:
     pages = [
         st.Page(
             PAGES_DIR / "handbook.py",
-            title="Handbook assistant",
+            title="Assistant",
             icon=":material/menu_book:",
             url_path="handbook",
             default=True,
             help=(
-                "Ask questions about company policy and get answers grounded in "
-                "the handbook sections available to your role."
+                "Ask handbook questions or apply for leave in chat. Handbook "
+                "answers cite their pages; leave requests become formatted "
+                "letters in the HR inbox."
             ),
         ),
         st.Page(

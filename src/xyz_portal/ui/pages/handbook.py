@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +12,12 @@ from ... import auth
 from ...chat import build_llm_messages, make_retrieval_query
 from ...config import API_KEY, DEFAULT_MODEL, PDF_PATH
 from ...constants import MODEL_LABELS, SCOPE_LABELS, SUGGESTIONS
+from ...leave import (
+    TOOL_LABELS,
+    chat_tools,
+    execute_chat_tool,
+    is_leave_intent,
+)
 from ...rag import (
     PROJECT_NAME,
     TRACING_ENABLED,
@@ -97,8 +104,8 @@ def _render_chat_sidebar():
 
         st.space("small")
         st.caption(
-            "Answers are generated only from the handbook sections available "
-            "to your role."
+            "Handbook answers are grounded in the sections available to your "
+            "role. Leave requests are handled by the leave workflow."
         )
 
     return (
@@ -147,12 +154,13 @@ def _handle_prompt(
     top_k: int,
     scope: str,
 ) -> None:
-    """Retrieve passages, stream one answer, and persist the turn."""
+    """Retrieve passages, run the tool-enabled assistant, and persist the turn."""
     history = st.session_state.messages
     history_turns = sum(1 for message in history if message["role"] == "user")
     retrieval_query = make_retrieval_query(prompt, history)
     st.session_state.messages.append({"role": "user", "content": prompt})
 
+    tools = chat_tools(user)
     turn_inputs = {
         "question": prompt,
         "retrieval_query": retrieval_query,
@@ -163,6 +171,7 @@ def _handle_prompt(
         "employee_id": user["employee_id"],
         "role": user["role"],
         "access_scope": scope,
+        "available_tools": [tool["function"]["name"] for tool in tools],
     }
 
     with trace_run(
@@ -198,7 +207,7 @@ def _handle_prompt(
             ]
             pages = sorted({source["page"] for source in sources})
 
-            if not results:
+            if not results and not (tools and is_leave_intent(prompt)):
                 answer = (
                     "I couldn't find that in the handbook sections available "
                     "to your role. Try rephrasing with a policy or section "
@@ -227,6 +236,7 @@ def _handle_prompt(
                     st.session_state.messages[:-1],
                     results,
                     user,
+                    include_leave_tools=bool(tools),
                 )
                 stream_state: dict[str, Any] = {
                     "reasoning": [],
@@ -235,27 +245,135 @@ def _handle_prompt(
                     "model": selected_model,
                 }
                 reasoning_slot = st.empty()
-
-                def token_stream():
-                    for kind, value in stream_chat(
-                        selected_model,
-                        llm_messages,
-                        API_KEY,
-                        reasoning=use_reasoning and reasoning_available,
-                        allow_free_fallback=is_free_model(selected_model),
-                    ):
-                        if kind == "reasoning":
-                            stream_state["reasoning"].append(value)
-                        elif kind == "content":
-                            stream_state["content"].append(value)
-                            yield value
-                        elif kind == "notice":
-                            stream_state["notices"].append(value)
-                        elif kind == "model":
-                            stream_state["model"] = value
+                tool_status = None
+                tools_used: list[str] = []
+                tool_limit_hit = False
 
                 try:
-                    st.write_stream(token_stream())
+                    for _round in range(4):
+                        round_state: dict[str, Any] = {
+                            "reasoning": [],
+                            "content": [],
+                            "notices": [],
+                            "model": selected_model,
+                            "tool_calls": [],
+                        }
+
+                        def token_stream(
+                            state: dict[str, Any] = round_state,
+                        ):
+                            for kind, value in stream_chat(
+                                selected_model,
+                                llm_messages,
+                                API_KEY,
+                                reasoning=use_reasoning and reasoning_available,
+                                allow_free_fallback=is_free_model(selected_model),
+                                tools=tools or None,
+                            ):
+                                if kind == "reasoning":
+                                    state["reasoning"].append(value)
+                                elif kind == "content":
+                                    state["content"].append(value)
+                                    yield value
+                                elif kind == "notice":
+                                    state["notices"].append(value)
+                                elif kind == "model":
+                                    state["model"] = value
+                                elif kind == "tool_calls":
+                                    state["tool_calls"] = value
+
+                        round_output = st.write_stream(token_stream())
+                        if isinstance(round_output, list):
+                            round_text = "".join(str(item) for item in round_output)
+                        else:
+                            round_text = round_output or ""
+                        stream_state["content"].append(round_text)
+                        stream_state["reasoning"].extend(round_state["reasoning"])
+                        stream_state["notices"].extend(round_state["notices"])
+                        stream_state["model"] = (
+                            round_state["model"] or stream_state["model"]
+                        )
+
+                        calls = round_state["tool_calls"]
+                        if not calls:
+                            break
+
+                        llm_messages.append(
+                            {
+                                "role": "assistant",
+                                "content": round_text or None,
+                                "tool_calls": calls,
+                            }
+                        )
+                        for call in calls:
+                            function = call.get("function") or {}
+                            name = str(function.get("name") or "")
+                            call_id = str(call.get("id") or name or "unknown")
+                            if not name:
+                                llm_messages.append(
+                                    {
+                                        "role": "tool",
+                                        "tool_call_id": call_id,
+                                        "content": json.dumps(
+                                            {
+                                                "ok": False,
+                                                "error": "The tool name was missing.",
+                                            }
+                                        ),
+                                    }
+                                )
+                                continue
+                            tools_used.append(name)
+                            if tool_status is None:
+                                tool_status = st.status(
+                                    "Working on your request",
+                                    type="compact",
+                                    expanded=False,
+                                )
+                            label = TOOL_LABELS.get(name, name)
+                            tool_status.update(label=f"{label}…", state="running")
+                            result = execute_chat_tool(
+                                user,
+                                name,
+                                function.get("arguments"),
+                            )
+                            llm_messages.append(
+                                {
+                                    "role": "tool",
+                                    "tool_call_id": call_id,
+                                    "content": json.dumps(
+                                        result, ensure_ascii=False, default=str
+                                    ),
+                                }
+                            )
+                            if result.get("ok"):
+                                tool_status.update(
+                                    label=f"{label} · done",
+                                    state="complete",
+                                )
+                            else:
+                                tool_status.update(
+                                    label=f"{label} · needs more information",
+                                    state="complete",
+                                )
+                    else:
+                        tool_limit_hit = True
+                        if tool_status is not None:
+                            tool_status.update(
+                                label="Stopped after several tool calls",
+                                state="error",
+                            )
+                        st.warning(
+                            "I stopped after several tool calls. Please simplify "
+                            "the request and try again."
+                        )
+
+                    if tool_status is not None and not tool_limit_hit:
+                        tool_status.update(
+                            label="Leave workflow updated",
+                            state="complete",
+                        )
+
                     answer = "".join(stream_state["content"]).strip()
                     reasoning = "".join(stream_state["reasoning"])
 
@@ -272,7 +390,9 @@ def _handle_prompt(
                     for notice in stream_state["notices"]:
                         st.caption(notice)
 
-                    render_sources(sources)
+                    if not tools_used:
+                        render_sources(sources)
+
                     used_model = stream_state["model"]
                     st.caption(
                         f"Answered with {MODEL_LABELS.get(used_model, used_model)}"
@@ -286,6 +406,7 @@ def _handle_prompt(
                         "pages": pages,
                         "reasoning_chars": len(reasoning),
                         "fallback_notices": stream_state["notices"],
+                        "tools_used": tools_used,
                         "access_scope": scope,
                     }
 
@@ -293,7 +414,7 @@ def _handle_prompt(
                         {
                             "role": "assistant",
                             "content": answer,
-                            "sources": sources,
+                            "sources": [] if tools_used else sources,
                             "reasoning": reasoning,
                             "model": used_model,
                         }
@@ -312,6 +433,7 @@ def _handle_prompt(
                         "retrieved": len(sources),
                         "pages": pages,
                         "reasoning_chars": len("".join(stream_state["reasoning"])),
+                        "tools_used": tools_used,
                         "access_scope": scope,
                     }
                     if partial:
@@ -320,7 +442,7 @@ def _handle_prompt(
                                 "role": "assistant",
                                 "content": partial
                                 + "\n\n_(The response was interrupted.)_",
-                                "sources": sources,
+                                "sources": [] if tools_used else sources,
                                 "reasoning": "".join(stream_state["reasoning"]),
                                 "model": stream_state["model"],
                             }
@@ -344,8 +466,11 @@ def render(user: dict[str, Any]) -> None:
     ) = _render_chat_sidebar()
 
     scope = auth.handbook_scope(user)
-    st.title("Ask the handbook")
-    st.caption(f"{user['name']} · {user['role_label']} · Access: {SCOPE_LABELS[scope]}")
+    st.title("Ask XYZ assistant")
+    st.caption(
+        f"{user['name']} · {user['role_label']} · Handbook access: "
+        f"{SCOPE_LABELS[scope]}"
+    )
 
     if not API_KEY:
         st.error(
@@ -386,6 +511,8 @@ def render(user: dict[str, Any]) -> None:
         suggestions["Payroll"] = (
             "What is the total monthly salary for all 15 employees?"
         )
+    if auth.has_permission(user, "leave:approve"):
+        suggestions["HR inbox"] = "Show me the pending leave requests."
 
     selected_suggestion = None
     empty_state = None
@@ -395,9 +522,9 @@ def render(user: dict[str, Any]) -> None:
         with empty_state.container(border=True):
             st.markdown("#### Start with a question")
             st.caption(
-                "Each answer is retrieved from the handbook and cites the page it "
-                "came from. Restricted appendix content is never retrieved for "
-                "roles that cannot access it."
+                "Ask about policy or apply for leave in the same chat. Handbook "
+                "answers cite their pages; leave requests become formatted "
+                "letters in the HR inbox."
             )
             chosen = st.pills(
                 "Suggested questions",
