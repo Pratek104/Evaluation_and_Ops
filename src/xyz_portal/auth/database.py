@@ -60,8 +60,41 @@ CREATE TABLE IF NOT EXISTS auth_audit (
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS leave_requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    employee_id TEXT NOT NULL REFERENCES employees(employee_id) ON DELETE CASCADE,
+    leave_type TEXT NOT NULL,
+    start_date TEXT NOT NULL,
+    end_date TEXT NOT NULL,
+    days INTEGER NOT NULL CHECK (days > 0),
+    reason TEXT NOT NULL DEFAULT '',
+    raw_chat TEXT NOT NULL DEFAULT '',
+    letter_text TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'approved', 'rejected', 'cancelled')),
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    decided_by TEXT REFERENCES employees(employee_id),
+    decided_at TEXT,
+    decision_note TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS leave_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    request_id INTEGER NOT NULL REFERENCES leave_requests(id) ON DELETE CASCADE,
+    actor_id TEXT,
+    event TEXT NOT NULL,
+    detail TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE INDEX IF NOT EXISTS idx_employees_department ON employees(department);
 CREATE INDEX IF NOT EXISTS idx_auth_audit_created_at ON auth_audit(created_at);
+CREATE INDEX IF NOT EXISTS idx_leave_requests_employee
+    ON leave_requests(employee_id);
+CREATE INDEX IF NOT EXISTS idx_leave_requests_status ON leave_requests(status);
+CREATE INDEX IF NOT EXISTS idx_leave_requests_created_at
+    ON leave_requests(created_at);
+CREATE INDEX IF NOT EXISTS idx_leave_events_request ON leave_events(request_id);
 """
 
 

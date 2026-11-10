@@ -1,10 +1,13 @@
-.PHONY: install run test lint format typecheck check reset-db verify-seed eval eval-retrieval eval-report docker-build
+.PHONY: install run mcp test lint format typecheck check reset-db verify-seed eval eval-retrieval eval-report docker-build
 
 install:
 	python -m pip install -r requirements-dev.txt
 
 run:
 	python -m streamlit run streamlit_app.py
+
+mcp:
+	python -m xyz_portal.mcp_server
 
 test:
 	python -m pytest

@@ -41,7 +41,10 @@ MODEL_LABELS = {
 SUGGESTIONS = {
     "Working hours": "What are the office working hours and the work week?",
     "Probation": "What is the probation period and how does confirmation work?",
-    "Leave": "What are the leave types and how many days am I entitled to?",
+    "Request leave": (
+        "I want to apply for casual leave for 2 days because of a family function."
+    ),
+    "Leave policy": "What are the leave types and how many days am I entitled to?",
     "Travel": "What are the rules for local and domestic travel reimbursement?",
     "Notice period": "What is the notice period after confirmation?",
 }

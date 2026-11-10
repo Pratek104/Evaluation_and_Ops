@@ -26,6 +26,10 @@ PERMISSIONS: dict[str, str] = {
     "salary:read:all": "View all employee compensation",
     "roles:view": "View roles and the permission matrix",
     "audit:read": "View authentication audit events",
+    "leave:request": "Submit leave requests",
+    "leave:read:self": "View own leave requests",
+    "leave:read:all": "View all leave requests",
+    "leave:approve": "Approve or reject leave requests",
 }
 
 ROLE_PERMISSIONS: dict[str, tuple[str, ...]] = {
@@ -40,6 +44,10 @@ ROLE_PERMISSIONS: dict[str, tuple[str, ...]] = {
         "salary:read:all",
         "roles:view",
         "audit:read",
+        "leave:request",
+        "leave:read:self",
+        "leave:read:all",
+        "leave:approve",
     ),
     "CTO": (
         "handbook:read",
@@ -49,6 +57,8 @@ ROLE_PERMISSIONS: dict[str, tuple[str, ...]] = {
         "directory:read:department",
         "salary:read:self",
         "roles:view",
+        "leave:request",
+        "leave:read:self",
     ),
     "HR": (
         "handbook:read",
@@ -61,12 +71,18 @@ ROLE_PERMISSIONS: dict[str, tuple[str, ...]] = {
         "salary:read:all",
         "roles:view",
         "audit:read",
+        "leave:request",
+        "leave:read:self",
+        "leave:read:all",
+        "leave:approve",
     ),
     "EMPLOYEE": (
         "handbook:read",
         "profile:read:self",
         "directory:read:self",
         "salary:read:self",
+        "leave:request",
+        "leave:read:self",
     ),
 }
 

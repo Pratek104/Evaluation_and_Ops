@@ -23,10 +23,16 @@ src/xyz_portal/ui/app.py
                     ▼
           xyz_portal.ui.pages.*.render(user)
                     │
-        ┌───────────┴────────────┐
-        ▼                        ▼
-  auth service              rag engine / chat
-  (SQLite + RBAC)           (scoped retrieval + LLM)
+        ┌───────────┼────────────────────┐
+        ▼           ▼                    ▼
+  auth service   leave service      rag engine / chat
+  (SQLite RBAC)  (letters + inbox)  (scoped retrieval + LLM)
+                       ▲
+                       │
+          xyz_portal.mcp_server (stdio)
+                       ▲
+                       │
+                 MCP client / chat host
 ```
 
 ## Layers
@@ -64,6 +70,27 @@ Builds retrieval queries from short follow-ups and assembles the grounded system
 prompt. The prompt includes the signed-in employee's role and handbook scope but
 never includes data the role cannot retrieve.
 
+### `xyz_portal.leave`
+
+- `parsing.py` — leave-type detection, natural-language date parsing, reason
+  extraction, and Monday–Saturday working-day counting.
+- `letters.py` — the formal letter template used for HR correspondence.
+- `service.py` — submission, chat-to-letter preview, request listing, HR inbox,
+  approval/rejection, self-approval blocking, and the event log.
+- `tools.py` — OpenAI-compatible tool definitions filtered by role, plus the
+  dispatcher used by the chat loop.
+
+The package is independent of the UI and transport. The Streamlit chat tools and
+the MCP server call the same functions, so authorization and letter formatting
+cannot drift between them.
+
+### `xyz_portal.mcp_server`
+
+Exposes the leave service over the Model Context Protocol's stdio transport. It
+authenticates callers with `sign_in`, keeps opaque tokens in memory, and maps
+tool calls onto the same permission-checked service functions. It does not
+reimplement business rules.
+
 ### `xyz_portal.ui`
 
 - `app.py` — page configuration, database bootstrap, authentication gate, and
@@ -89,6 +116,12 @@ keeping implementation in the package.
 5. The page calls `require_user()` and its render function. The render function
    repeats the authorization check before querying data.
 
+The leave workflow is available inside the assistant chat: the model receives
+only the tools allowed by the user's role, calls the leave service, and feeds the
+JSON result back into the conversation. `xyz_portal.mcp_server` is a second
+entrypoint over stdio; it authenticates with `sign_in` and dispatches each tool to
+the same permission-checked leave service.
+
 ## RBAC enforcement points
 
 The app treats navigation as presentation, not security.
@@ -98,6 +131,9 @@ The app treats navigation as presentation, not security.
 | Navigation | Hides pages the role cannot use |
 | Page render | Rechecks the required permission |
 | Data service | Filters directory and salary SQL rows by permission |
+| Leave service | Rechecks `leave:request`, `leave:read:*`, and `leave:approve` on every call |
+| Chat tools | Only exposes tools the role can use; every tool result is rechecked by the service |
+| MCP server | Resolves the session token to an employee before dispatching a tool |
 | Retrieval | Marks restricted passages ineligible before ranking |
 | Prompt | States the user's role and allowed handbook scope |
 | Session | Clears chat history when role or permissions change |

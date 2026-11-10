@@ -2,11 +2,37 @@
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Any
 
 from .auth import handbook_scope
 from .constants import SCOPE_LABELS, SYSTEM_PROMPT
 from .rag import SearchResult
+
+LEAVE_TOOL_PROMPT = """You can also handle leave requests and HR decisions with the \
+provided tools. This workflow is an exception to the handbook-only rule above: use \
+tool results for leave actions, and use handbook passages for leave policy.
+
+Leave workflow rules:
+1. When the employee asks to apply for leave, collect the leave type, start date, \
+end date, and reason. Ask one concise follow-up question for anything missing. \
+Never invent dates, reasons, or leave types.
+2. If the employee gives only a duration, ask for the start date or confirm the \
+computed end date before submitting.
+3. Before calling submit_leave_request, restate the leave type, dates, and reason, \
+and ask for explicit confirmation.
+4. Call submit_leave_request only after confirmation. On success, show the formatted \
+letter returned by the tool, state the reference number, and say it is in the HR \
+inbox. If the tool fails, explain the error and ask for the missing detail.
+5. Use list_my_leave_requests or get_leave_request when the employee asks about \
+existing requests.
+6. HR users may use get_hr_inbox and decide_leave_request. Confirm the decision \
+first, and never approve the approver's own request.
+7. Never claim a leave request was submitted or decided unless the corresponding \
+tool returned ok=true.
+8. Do not present tool output as a handbook citation. Cite handbook pages only for \
+policy statements that come from the supplied passages.
+"""
 
 
 def make_retrieval_query(question: str, history: list[dict[str, Any]]) -> str:
@@ -52,7 +78,9 @@ def build_llm_messages(
     history: list[dict[str, Any]],
     results: list[SearchResult],
     user: dict[str, Any],
-) -> list[dict[str, str]]:
+    *,
+    include_leave_tools: bool = False,
+) -> list[dict[str, Any]]:
     """Create the grounded prompt sent to the model."""
     context = "\n\n".join(
         f"[Passage {number} | page {result.passage.page}]\n{result.passage.text}"
@@ -64,11 +92,16 @@ def build_llm_messages(
         f"Role: {user['role_label']} ({user['role']})\n"
         f"Department: {user['department']}\n"
         f"Handbook access scope: {SCOPE_LABELS[handbook_scope(user)]}\n"
+        f"Current date: {date.today().isoformat()}\n"
     )
-    messages: list[dict[str, str]] = [
+    system_prompt = f"{SYSTEM_PROMPT}{user_context}\nHANDBOOK PASSAGES\n{context}"
+    if include_leave_tools:
+        system_prompt = f"{system_prompt}\n\n{LEAVE_TOOL_PROMPT}"
+
+    messages: list[dict[str, Any]] = [
         {
             "role": "system",
-            "content": f"{SYSTEM_PROMPT}{user_context}\nHANDBOOK PASSAGES\n{context}",
+            "content": system_prompt,
         }
     ]
     for message in history[-6:]:

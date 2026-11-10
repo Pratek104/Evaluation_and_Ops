@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterator
+from typing import Any
 
 import requests
 
@@ -47,6 +48,7 @@ def supports_reasoning(model: str) -> bool:
 def _trace_llm_inputs(inputs: dict) -> dict:
     """Describe an OpenRouter request without exposing the API key."""
     messages = inputs.get("messages") or []
+    tools = inputs.get("tools") or []
     return {
         "model": inputs.get("model"),
         "messages": [
@@ -57,11 +59,48 @@ def _trace_llm_inputs(inputs: dict) -> dict:
             for message in messages
             if isinstance(message, dict)
         ],
+        "tools": [
+            tool.get("function", {}).get("name")
+            for tool in tools
+            if isinstance(tool, dict)
+        ],
+        "tool_choice": inputs.get("tool_choice"),
         "reasoning": bool(inputs.get("reasoning", False)),
         "temperature": inputs.get("temperature", 0.2),
         "max_tokens": inputs.get("max_tokens", 1600),
         "allow_free_fallback": bool(inputs.get("allow_free_fallback", True)),
     }
+
+
+def merge_tool_call_delta(
+    calls: dict[int, dict[str, Any]],
+    deltas: list[dict[str, Any]],
+) -> None:
+    """Accumulate streamed OpenAI-style tool call fragments by index."""
+    for delta in deltas:
+        if not isinstance(delta, dict):
+            continue
+        index = int(delta.get("index", 0))
+        call = calls.setdefault(
+            index,
+            {
+                "id": "",
+                "type": "function",
+                "function": {"name": "", "arguments": ""},
+            },
+        )
+        call_id = delta.get("id")
+        if isinstance(call_id, str) and call_id:
+            call["id"] = call_id
+        function = delta.get("function")
+        if not isinstance(function, dict):
+            continue
+        name = function.get("name")
+        if isinstance(name, str) and name:
+            call["function"]["name"] = name
+        arguments = function.get("arguments")
+        if isinstance(arguments, str) and arguments:
+            call["function"]["arguments"] += arguments
 
 
 def _reduce_stream_events(events: list[tuple[str, str]] | None) -> dict:
@@ -70,6 +109,7 @@ def _reduce_stream_events(events: list[tuple[str, str]] | None) -> dict:
     reasoning: list[str] = []
     notices: list[str] = []
     model = ""
+    tool_calls: list[dict[str, Any]] = []
 
     for event in events or []:
         if not isinstance(event, tuple) or len(event) != 2:
@@ -83,6 +123,8 @@ def _reduce_stream_events(events: list[tuple[str, str]] | None) -> dict:
             notices.append(value)
         elif kind == "model" and isinstance(value, str):
             model = value
+        elif kind == "tool_calls" and isinstance(value, list):
+            tool_calls = value
 
     reasoning_text = "".join(reasoning)
     return {
@@ -91,6 +133,11 @@ def _reduce_stream_events(events: list[tuple[str, str]] | None) -> dict:
         "reasoning": reasoning_text,
         "reasoning_chars": len(reasoning_text),
         "notices": notices,
+        "tool_calls": [
+            call.get("function", {}).get("name")
+            for call in tool_calls
+            if isinstance(call, dict)
+        ],
         "event_count": len(events or []),
     }
 
@@ -178,13 +225,17 @@ def stream_chat(
     temperature: float = 0.2,
     max_tokens: int = 1600,
     allow_free_fallback: bool = True,
+    tools: list[dict[str, Any]] | None = None,
+    tool_choice: str | None = None,
     timeout: tuple[float, float] = (15.0, 240.0),
-) -> Iterator[tuple[str, str]]:
+) -> Iterator[tuple[str, Any]]:
     """Stream a chat completion.
 
     Yields ``(kind, value)`` events where kind is one of ``model``, ``notice``,
-    ``reasoning`` or ``content``. The model/notice events explain an automatic
-    switch between free models.
+    ``reasoning``, ``content`` or ``tool_calls``. Tool call fragments are
+    accumulated and emitted once at the end of the stream as a list of
+    OpenAI-compatible tool call dictionaries. The model/notice events explain an
+    automatic switch between free models.
     """
     if not api_key:
         raise OpenRouterError("OPENROUTER_API_KEY is missing. Add it to the .env file.")
@@ -209,10 +260,14 @@ def stream_chat(
             "temperature": temperature,
             "max_tokens": max_tokens,
         }
+        if tools:
+            payload["tools"] = tools
+            payload["tool_choice"] = tool_choice or "auto"
         if reasoning and supports_reasoning(candidate):
             payload["reasoning"] = {"enabled": True}
 
         has_more_candidates = attempt < len(candidates) - 1
+        tool_calls: dict[int, dict[str, Any]] = {}
 
         try:
             with requests.post(
@@ -272,6 +327,15 @@ def stream_chat(
                     if isinstance(content, str) and content:
                         yield ("content", content)
 
+                    tool_deltas = delta.get("tool_calls")
+                    if isinstance(tool_deltas, list):
+                        merge_tool_call_delta(tool_calls, tool_deltas)
+
+                if tool_calls:
+                    yield (
+                        "tool_calls",
+                        [tool_calls[index] for index in sorted(tool_calls)],
+                    )
                 return
 
         except requests.RequestException as exc:

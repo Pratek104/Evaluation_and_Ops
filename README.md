@@ -2,7 +2,9 @@
 
 A production-structured Streamlit portal that combines **SQLite RBAC**, a
 **23-page handbook RAG pipeline**, **streaming LLM answers with guardrails**,
-**full observability**, and a **reproducible evaluation harness**.
+**full observability**, a **reproducible evaluation harness**, and a **leave
+approval workflow exposed through both Streamlit and a Model Context Protocol
+(MCP) server**.
 
 The app seeds 15 employees from the handbook appendix, authenticates them by work
 email, and restricts both SQL rows and handbook passages according to the
@@ -11,7 +13,7 @@ pages, and never sees appendix content the role cannot access.
 
 ![Python](https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white)
 ![Streamlit](https://img.shields.io/badge/Streamlit-1.67%2B-FF4B4B?logo=streamlit&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-35%20passing-2ea043)
+![Tests](https://img.shields.io/badge/tests-60%20passing-2ea043)
 ![Lint](https://img.shields.io/badge/lint-ruff-261230)
 ![Types](https://img.shields.io/badge/types-mypy-2A6DB2)
 ![Judge](https://img.shields.io/badge/judge-DeepSeek%20V4.1%20Flash-4B6BFB)
@@ -34,6 +36,7 @@ pages, and never sees appendix content the role cannot access.
   - [7. Model router + outbound API call](#7-model-router--outbound-api-call)
   - [8. Observability + evals](#8-observability--evals)
 - [RBAC model](#rbac-model)
+- [Leave workflow and MCP server](#leave-workflow-and-mcp-server)
 - [RAG pipeline details](#rag-pipeline-details)
 - [Evaluation suite](#evaluation-suite)
 - [Quick start](#quick-start)
@@ -66,6 +69,10 @@ pages, and never sees appendix content the role cannot access.
 - **Observability and evaluation as first-class features**: LangSmith spans for
   each chat turn, plus a 25-case evaluation suite with latency, retrieval,
   citation, safety, and model-judge metrics exported to CSV.
+- **A real MCP server for a business workflow.** The Streamlit chat collects leave
+  details with tool calls, renders a formal letter, and routes it to an HR inbox
+  where an approver decides it — with the same RBAC checks as the rest of the app.
+  The same tools are exposed to external clients over the Model Context Protocol.
 
 ## At a glance
 
@@ -78,7 +85,9 @@ pages, and never sees appendix content the role cannot access.
 | Guardrails | Pre-ranking scope mask, no-results refusal, injection resistance |
 | Observability | LangSmith `handbook_chat` chain with retriever and LLM child spans |
 | Evaluation | 25 cases, 7 judge dimensions, CSV + Markdown + JSON reports |
-| Quality gates | 35 tests, Ruff lint/format, mypy, GitHub Actions CI |
+| Leave workflow | Chat tool calling, follow-up questions, HR inbox, approve/reject |
+| MCP server | 10 stdio tools over the same RBAC-enforced leave service |
+| Quality gates | 60 tests, Ruff lint/format, mypy, GitHub Actions CI |
 | Runtime | Streamlit, Python 3.10+ (CI/Docker use 3.12) |
 
 ## Evaluation at a glance
@@ -127,21 +136,29 @@ src/xyz_portal/ui/app.py
                     ▼
           xyz_portal.ui.pages.*.render(user)
                     │
-        ┌───────────┴────────────┐
-        ▼                        ▼
-  auth service              rag engine / chat
-  (SQLite + RBAC)           (scoped retrieval + LLM)
+        ┌───────────┼────────────────────┐
+        ▼           ▼                    ▼
+  auth service   leave service      rag engine / chat
+                       ▲                  │
+                       └──── chat tools ◄─┘
+                       ▲
+              mcp_server (stdio)
+                       ▲
+                       │
+                 MCP client
 ```
 
 ```text
 src/xyz_portal/
 ├── auth/        schema, seeding, PBKDF2 hashing, permissions, SQL filters
+├── leave/       parsing, letters, chat tools, requests, inbox, decisions
 ├── rag/         PDF index, hybrid retrieval, OpenRouter client, LangSmith tracing
 ├── ui/          session, login, navigation, components, page renderers
-├── chat.py      retrieval-query expansion + grounded system prompt
+├── chat.py      retrieval-query expansion, tool instructions, grounded prompt
 ├── config.py    environment and project-relative paths
 ├── constants.py system prompt, role labels, model labels, suggestions
-└── formatting.py display helpers
+├── formatting.py display helpers
+└── mcp_server.py Model Context Protocol stdio server for the leave workflow
 ```
 
 ## The request journey, end to end
@@ -369,6 +386,9 @@ Passwords are stored as salted PBKDF2-SHA256 hashes with per-user random salts.
 | All compensation | ✓ | — | ✓ | — |
 | View role/permission matrix | ✓ | ✓ | ✓ | — |
 | View sign-in audit | ✓ | — | ✓ | — |
+| Submit leave requests | ✓ | ✓ | ✓ | ✓ |
+| View all leave requests | ✓ | — | ✓ | — |
+| Approve/reject leave | ✓ | — | ✓ | — |
 | General handbook | ✓ | ✓ | ✓ | ✓ |
 | Appendix B directory in chat | ✓ | ✓ | — | — |
 | Appendix C salary in chat | ✓ | — | ✓ | — |
@@ -380,9 +400,115 @@ Passwords are stored as salted PBKDF2-SHA256 hashes with per-user random salts.
 | Navigation | Hides pages the role cannot use |
 | Page render | Rechecks the required permission |
 | Data service | Filters directory and salary SQL rows by permission |
+| Leave service | Rechecks `leave:request`, `leave:read:*`, and `leave:approve` on every call |
 | Retrieval | Masks restricted passages before ranking |
 | Prompt | States the user's role and allowed scope |
 | Session | Clears chat when role or permissions change |
+
+## Leave workflow and MCP server
+
+Leave is handled **inside the assistant chat**. Employees describe the request in
+natural language; the model asks for missing details, confirms the summary, calls
+a leave tool, and shows the formatted letter. HR reviews and decides requests in
+the same chat with the inbox and decision tools. There is no separate leave form
+or leave page.
+
+```text
+Employee chat
+   │  "I need sick leave on 12 Nov because I have a fever"
+   ▼
+Assistant asks for missing details, then confirms the summary
+   │  tool call: submit_leave_request
+   ▼
+leave service ──► render_leave_letter() ──► leave_requests (pending)
+   │
+   ▼
+HR chat
+   │  "Show pending leave requests"  → get_hr_inbox
+   │  "Approve LR-0001"              → decide_leave_request
+   ▼
+approved / rejected + note + leave_events audit row
+```
+
+The assistant uses OpenAI-compatible tool calling through OpenRouter. Tool
+definitions are filtered by the signed-in role, so an employee never receives HR
+approval tools. The chat loop executes tool calls, feeds the JSON result back to
+the model, and lets it write the final response. It stops after four tool rounds
+to avoid runaway loops.
+
+**Chat-to-letter translation is deterministic at the service boundary.** The
+model supplies structured fields, then the leave service validates the dates,
+counts working days, and renders a fixed formal letter. The parser also accepts
+ISO dates, `DD/MM/YYYY`, `10 Nov 2026`, `November 10, 2026`, weekday names,
+`today`, `tomorrow`, and `for N days` for MCP and direct service calls.
+
+| Property | Behaviour |
+| --- | --- |
+| Entry point | Assistant chat; no separate leave form |
+| Tool calling | `submit_leave_request`, `list_my_leave_requests`, `get_leave_request`, plus HR inbox/decision tools |
+| Follow-ups | The model asks for leave type, dates, and reason when missing |
+| Confirmation | The model restates the request and asks before submitting |
+| Leave types | Casual, Sick, Privileged, Unpaid, Maternity, Paternity, Bereavement, Compensatory |
+| Working days | Monday–Saturday, excluding Sundays and the first/third Saturday of each month |
+| Storage | `leave_requests` and `leave_events` in the same SQLite database |
+| Letter | Company header, reference, subject, dates, working-day count, reason, signature block |
+| Inbox | Pending/approved/rejected counts, formatted letter, original chat, decision note |
+| Decisions | Only `leave:approve` roles (HR and CEO); self-approval is blocked |
+| Audit | Every submission and decision appends to `leave_events` |
+
+Example generated letter:
+
+```text
+XYZ Company
+Human Resources Department
+
+Ref: LR-0001
+Date: 10 November 2026
+
+Subject: Leave Request — Sick Leave
+
+Dear Kavya Sharma,
+
+I am writing to formally request Sick Leave from Tuesday, 10 November 2026 to
+Thursday, 12 November 2026, inclusive (3 working days).
+
+Reason: I have a fever
+
+I request your approval for this leave. I will ensure that my responsibilities
+are handed over before my absence.
+
+Yours sincerely,
+
+Karan Joshi
+Software Engineer, Technology
+Employee ID: XYZ011
+karan.joshi@xyzcompany.example
+```
+
+### MCP server
+
+The same workflow is also available to external MCP clients. Start the server
+with `make mcp`, `python -m xyz_portal.mcp_server`, or the installed
+`xyz-leave-mcp` console script. Every tool except `sign_in` requires the session
+token returned by `sign_in`, so callers cannot impersonate another employee by
+passing an ID. The Streamlit chat uses the same service operations directly as
+OpenAI-compatible tools.
+
+| Tool | Purpose | Required permission |
+| --- | --- | --- |
+| `sign_in` | Authenticate and return a session token | — |
+| `sign_out` | Invalidate a token | — |
+| `whoami` | Show the session employee and permissions | — |
+| `format_leave_letter` | Translate raw chat into a letter preview without saving | `leave:request` |
+| `request_leave` | Submit structured leave to the HR inbox | `leave:request` |
+| `request_leave_from_chat` | Parse raw chat and submit immediately | `leave:request` |
+| `list_my_leave_requests` | List the caller's requests by status | `leave:read:self` |
+| `get_leave_request` | Read one request and its letter | owner or `leave:read:all` |
+| `get_hr_inbox` | Return inbox letters and status counts | `leave:approve` |
+| `decide_leave_request` | Approve or reject a pending request | `leave:approve` |
+
+See [docs/MCP.md](docs/MCP.md) for client configuration, request/response
+examples, and the full tool reference.
 
 ## RAG pipeline details
 
@@ -704,12 +830,14 @@ directory.
 │   └── access_control.py
 ├── src/xyz_portal/
 │   ├── auth/                  # Schema, seeding, password hashing, RBAC service
+│   ├── leave/                 # Parsing, letters, chat tools, requests, decisions
 │   ├── rag/                   # Retrieval engine, OpenRouter client, tracing
 │   ├── ui/                    # Session, login, navigation, components, pages
-│   ├── chat.py                # Prompt construction and retrieval queries
+│   ├── chat.py                # Prompt construction, tool instructions, retrieval
 │   ├── config.py              # Environment and path configuration
 │   ├── constants.py           # Shared UI and assistant constants
-│   └── formatting.py          # Display formatting helpers
+│   ├── formatting.py          # Display formatting helpers
+│   └── mcp_server.py          # MCP stdio server for the leave workflow
 ├── data/
 │   ├── raw/xyz_company.pdf    # Handbook used by the assistant
 │   ├── reference/             # Supporting source material
@@ -723,7 +851,7 @@ directory.
 │   ├── eval_utils.py
 │   ├── judge_rubric.md
 │   └── results/
-├── docs/                      # Architecture, security, and deployment notes
+├── docs/                      # Architecture, security, deployment, and MCP notes
 ├── scripts/                   # Database reset and seed verification
 ├── tests/                     # Unit and Streamlit AppTest coverage
 ├── .github/workflows/ci.yml   # Lint, format, type-check, and test pipeline
@@ -757,6 +885,7 @@ Or with `make`:
 | --- | --- |
 | `make install` | Install development dependencies |
 | `make run` | Run Streamlit |
+| `make mcp` | Run the leave workflow MCP server over stdio |
 | `make test` | Run the test suite |
 | `make lint` | Ruff check |
 | `make format` | Ruff format |
@@ -810,6 +939,12 @@ guidance.
 - The assistant only receives passages allowed by the signed-in role.
 - Restricted appendix content is masked before ranking, not filtered afterward.
 - Chat history is cleared on logout and on role/permission changes.
+- Leave requests are handled by role-filtered chat tools; employees never receive
+  HR approval tools, and every tool call is rechecked by the leave service.
+- MCP callers authenticate with `sign_in`; the server never trusts a
+  caller-supplied employee ID. Session tokens live only in server memory.
+- Leave self-approval is blocked, including for HR. The CEO can approve HR's
+  request as a break-glass approver.
 - Run behind HTTPS in any shared environment.
 - Review [docs/SECURITY.md](docs/SECURITY.md) before deploying with real data.
 
@@ -848,5 +983,6 @@ guidance.
 - [Architecture](docs/ARCHITECTURE.md)
 - [Security](docs/SECURITY.md)
 - [Deployment](docs/DEPLOYMENT.md)
+- [MCP server and leave tools](docs/MCP.md)
 - [Evaluation suite](evals/README.md)
 - [Judge rubric](evals/judge_rubric.md)

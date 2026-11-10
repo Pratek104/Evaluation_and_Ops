@@ -24,17 +24,22 @@ Authorization is enforced at multiple layers:
 5. The model prompt includes the user's role and scope, and the assistant is
    instructed not to speculate about data outside the supplied passages.
 6. Chat history is cleared on logout and when the role or permission set changes.
+7. Leave chat tools are filtered by role, and the service rechecks every
+   `leave:*` permission before acting.
+8. MCP tools resolve an opaque session token to an employee and then apply the
+   same `leave:*` permission checks as the UI.
 
 Roles are fixed in the seeded policy. There is no self-service role escalation
-path in the UI or API.
+path in the UI or API. Leave self-approval is rejected even for HR; the CEO can
+approve HR's request as a break-glass approver.
 
 ## Data protection
 
 - `.env` is ignored by git. Never commit API keys or tracing credentials.
 - `data/runtime/` is ignored by git, including the SQLite database and embedding
   cache.
-- The database stores salary data and password hashes; treat the runtime volume
-  as sensitive.
+- The database stores salary data, password hashes, and leave records; treat the
+  runtime volume as sensitive.
 - The assistant sends retrieved handbook text and the current question to
   OpenRouter. Do not put secrets in the handbook PDF.
 - LangSmith traces may include prompts, retrieved passages, answers, and user
@@ -62,6 +67,9 @@ Recommended rotation steps:
 - Run the container as a non-root user (the provided Dockerfile does).
 - Restrict network access to the runtime volume and database backups.
 - Set a non-default demo password before real use.
+- Treat the MCP stdio server as a local trusted-client integration. It runs as a
+  subprocess under the client's OS account, and its in-memory tokens are not a
+  substitute for OS isolation.
 - Keep `LANGSMITH_TRACING=false` unless trace data is approved for the
   environment.
 - Review dependency updates regularly.
@@ -75,6 +83,9 @@ Recommended rotation steps:
   managed database for sensitive deployments.
 - Streamlit session state is process-local. Horizontal scaling requires shared
   persistence and a shared session strategy.
+- MCP session tokens are process-local and have no idle expiry; restarting the
+  server invalidates them. Add expiry or a shared token store before exposing the
+  server to multiple long-running clients.
 - Free OpenRouter models share upstream rate limits and are not suitable for
   guaranteed availability.
 
